@@ -1,0 +1,198 @@
+# SeleniumTesting.mdc
+# Strong Guidance – Preferred Patterns
+
+This document provides strong guidance for Selenium-based UI automation.
+Rules are phrased as SHOULD / SHOULD NOT and represent preferred patterns for Cursor.
+
+---
+
+## Core Principles
+- Tests SHOULD be deterministic and stable
+- UI automation SHOULD validate user behavior, not business logic
+- CI execution SHOULD be the primary mode
+
+---
+
+## Preferred Stack
+- TypeScript + Jest
+- Selenium WebDriver
+- npm + Jenkins
+- Page Object Model
+- Jest HTML Reporter (or Allure if preferred)
+- axe-core for accessibility
+
+---
+
+## Canonical Project Structure
+```text
+tests/ui/
+ ├─ src/
+ │   ├─ base          # Base test classes, driver factory
+ │   ├─ pages         # Page Object Model classes
+ │   └─ tests         # Test files
+ ├─ config/           # Configuration files
+ └─ reports/          # Test reports
+```
+
+---
+
+## Driver Factory (Canonical)
+```typescript
+import { Builder, WebDriver } from 'selenium-webdriver';
+import * as chrome from 'selenium-webdriver/chrome';
+
+export class DriverFactory {
+  static async create(browser: string): Promise<WebDriver> {
+    if (browser === 'chrome') {
+      const options = new chrome.Options();
+      options.addArguments('--no-sandbox');
+      options.addArguments('--disable-dev-shm-usage');
+      
+      // Handle headless vs visible mode
+      if (process.env.CI === 'true' || process.env.HEADLESS === 'true') {
+        options.addArguments('--headless');
+        options.addArguments('--window-size=1920,1080');
+      }
+      
+      const driver = await new Builder()
+        .forBrowser('chrome')
+        .setChromeOptions(options)
+        .build();
+      
+      // Set window size based on mode (see Window Sizing section)
+      if (process.env.CI === 'true' || process.env.HEADLESS === 'true') {
+        await driver.manage().window().setRect({ width: 1920, height: 1080 });
+      } else {
+        await driver.manage().window().maximize();
+      }
+      
+      return driver;
+    }
+    if (browser === 'firefox') {
+      return new Builder()
+        .forBrowser('firefox')
+        .build();
+    }
+    throw new Error(`Unsupported browser: ${browser}`);
+  }
+}
+```
+
+---
+
+## Window Sizing: Headless vs Visible Mode
+
+**CRITICAL**: Window sizing MUST be handled differently for headless and visible modes to prevent zoom/scaling issues.
+
+### Problem
+Setting a fixed large window size (e.g., 1920x1080) in visible mode can cause Chrome to zoom/scale content when the display is smaller, making the application appear "zoomed in" and breaking visual tests.
+
+### Solution Pattern
+```typescript
+// In DriverFactory.createDriver()
+
+// Headless mode: Set explicit window size for consistent rendering
+if (process.env.CI === 'true' || process.env.HEADLESS === 'true') {
+  options.addArguments('--headless');
+  options.addArguments('--window-size=1920,1080');
+  // ... build driver ...
+  await driver.manage().window().setRect({ width: 1920, height: 1080 });
+} else {
+  // Visible mode: Maximize window to fit display (prevents zoom issues)
+  // ... build driver ...
+  await driver.manage().window().maximize();
+}
+```
+
+### Rules
+- **Headless mode**: SHOULD set explicit window size (1920x1080) for consistent rendering across CI environments
+- **Visible mode**: SHOULD use `maximize()` instead of fixed size to prevent zoom/scaling issues
+- **NEVER** set a fixed large window size unconditionally - it will cause zoom issues on smaller displays
+- Window size SHOULD be set AFTER driver creation, not just via Chrome arguments
+
+### Why This Matters
+- Responsive design elements (e.g., `md:inline` Tailwind classes) depend on viewport size
+- Fixed large sizes on smaller displays trigger browser zoom/scale behavior
+- Headless mode has no display constraints, so fixed sizes work fine
+- Visible mode must adapt to actual display size to render correctly
+
+---
+
+## Page Object Example
+```typescript
+import { WebDriver, By, until } from 'selenium-webdriver';
+import { BasePage } from '../base/BasePage';
+
+export class LoginPage extends BasePage {
+  private readonly username = By.id('username');
+
+  async enterUsername(value: string): Promise<void> {
+    const element = await this.waitForElement(this.username);
+    await element.sendKeys(value);
+  }
+}
+```
+
+---
+
+## Locator Guidance
+Preferred order:
+1. data-testid
+2. stable id
+3. accessible attributes
+4. CSS
+5. XPath (last resort)
+
+---
+
+## Explicit Wait Example
+```typescript
+import { WebDriver, until, By } from 'selenium-webdriver';
+
+const element = await driver.wait(
+  until.elementLocated(By.id('username')),
+  10000 // 10 seconds
+);
+```
+
+---
+
+## Accessibility (axe-core)
+```typescript
+import { AxeBuilder } from '@axe-core/webdriverjs';
+
+const results = await new AxeBuilder(driver).analyze();
+expect(results.violations).toHaveLength(0);
+```
+
+---
+
+## Reporting (Jest HTML Reporter)
+```typescript
+// Configured in jest.config.ts
+// Screenshots captured on test failure via Jest hooks
+```
+
+---
+
+## Test Structure Example
+```typescript
+describe('Login Tests', () => {
+  let driver: WebDriver;
+
+  beforeAll(async () => {
+    driver = await DriverFactory.create('chrome');
+  });
+
+  afterAll(async () => {
+    await driver.quit();
+  });
+
+  test('should login with valid credentials', async () => {
+    const loginPage = new LoginPage(driver);
+    await loginPage.enterUsername('testuser');
+    // ... test implementation
+  });
+});
+```
+---

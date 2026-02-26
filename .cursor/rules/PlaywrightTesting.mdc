@@ -1,0 +1,405 @@
+# PlaywrightTesting.mdc
+# Strong Guidance – Preferred Patterns
+
+This document provides strong guidance for Playwright-based UI automation.
+Rules are phrased as SHOULD / SHOULD NOT and represent preferred patterns for Cursor.
+
+---
+
+## Core Principles
+- Tests SHOULD be deterministic and stable
+- UI automation SHOULD validate user behavior, not business logic
+- CI execution SHOULD be the primary mode
+- Tests SHOULD be isolated - each test runs independently with its own storage, cookies, and data
+- Tests SHOULD avoid third-party dependencies - use Network API to mock external services
+
+---
+
+## Preferred Stack
+- TypeScript + Playwright Test
+- npm + Jenkins (or GitHub Actions)
+- Page Object Model (or Component Object Model)
+- HTML Reporter (built-in)
+- @axe-core/playwright for accessibility
+- Playwright Test Agents (optional, for AI-assisted testing)
+
+---
+
+## Canonical Project Structure
+```text
+tests/ui/
+ ├─ src/
+ │   ├─ fixtures          # Custom fixtures (authenticated page, test data)
+ │   ├─ pages             # Page Object Model classes
+ │   └─ tests             # Test files (*.spec.ts)
+ ├─ playwright.config.ts  # Playwright configuration
+ └─ test-results/         # Test reports and traces
+```
+
+---
+
+## Playwright Configuration (Canonical)
+```typescript
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './tests/ui/src/tests',
+  fullyParallel: true,
+  forbidOnly: !!process.env.CI,
+  retries: process.env.CI ? 2 : 0,
+  workers: process.env.CI ? 1 : undefined,
+  reporter: [
+    ['html'],
+    ['list'],
+    ['junit', { outputFile: 'test-results/junit.xml' }],
+  ],
+  use: {
+    baseURL: process.env.BASE_URL || 'http://localhost:3000',
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
+  },
+  projects: [
+    {
+      name: 'chromium',
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'firefox',
+      use: { ...devices['Desktop Firefox'] },
+    },
+    {
+      name: 'webkit',
+      use: { ...devices['Desktop Safari'] },
+    },
+  ],
+  webServer: {
+    command: 'npm run dev',
+    url: 'http://localhost:3000',
+    reuseExistingServer: !process.env.CI,
+  },
+});
+```
+
+---
+
+## Viewport Sizing: Headless vs Visible Mode
+
+**CRITICAL**: Viewport sizing SHOULD be handled consistently for headless and visible modes.
+
+### Problem
+Setting a fixed large viewport size (e.g., 1920x1080) in visible mode can cause content scaling issues when the display is smaller, making the application appear "zoomed in" and breaking visual tests.
+
+### Solution Pattern
+```typescript
+// In playwright.config.ts
+
+// Headless mode: Set explicit viewport size for consistent rendering
+use: {
+  viewport: { width: 1920, height: 1080 },
+  // ... other options
+}
+
+// Or per-project for different viewports
+projects: [
+  {
+    name: 'chromium',
+    use: {
+      ...devices['Desktop Chrome'],
+      viewport: { width: 1920, height: 1080 },
+    },
+  },
+]
+```
+
+### Rules
+- **Headless mode**: SHOULD set explicit viewport size (1920x1080) for consistent rendering across CI environments
+- **Visible mode**: MAY use default viewport or set explicit size based on display constraints
+- **NEVER** rely on browser default viewport sizes in CI - always set explicitly
+- Viewport size SHOULD be set in `playwright.config.ts` via `use.viewport` or per-project
+
+### Why This Matters
+- Responsive design elements (e.g., `md:inline` Tailwind classes) depend on viewport size
+- Consistent viewport sizes ensure reproducible test results across environments
+- Explicit viewport prevents flaky tests due to browser default differences
+- Headless mode has no display constraints, so fixed sizes work fine
+- Visible mode must adapt to actual display size to render correctly
+
+---
+
+## Locator Guidance
+
+Preferred order (most resilient to least):
+1. `getByRole()` - Role-based locators (button, textbox, etc.)
+2. `getByLabel()` - Form labels
+3. `getByPlaceholder()` - Input placeholders
+4. `getByText()` - Visible text content
+5. `getByTestId()` - Test IDs (data-testid attributes)
+6. `locator()` with CSS selectors (fallback)
+7. `locator()` with XPath (last resort)
+
+### Locator Examples
+```typescript
+// Preferred: Role-based
+await page.getByRole('button', { name: 'Submit' }).click();
+
+// Preferred: Label-based
+await page.getByLabel('Email').fill('user@example.com');
+
+// Acceptable: Test ID
+await page.getByTestId('submit-button').click();
+
+// Avoid: CSS selectors (unless necessary)
+await page.locator('.submit-btn').click(); // Only if no better option
+```
+
+### Rules
+- **SHOULD** use Playwright's built-in locators with auto-waiting
+- **SHOULD** prioritize user-facing attributes over implementation details
+- **SHOULD NOT** use manual waits - Playwright handles actionability automatically
+- **SHOULD NOT** use CSS classes or IDs unless no better option exists
+
+---
+
+## Page Object Example
+```typescript
+import { Page, Locator } from '@playwright/test';
+
+export class LoginPage {
+  readonly page: Page;
+  readonly usernameInput: Locator;
+  readonly passwordInput: Locator;
+  readonly submitButton: Locator;
+
+  constructor(page: Page) {
+    this.page = page;
+    this.usernameInput = page.getByLabel('Username');
+    this.passwordInput = page.getByLabel('Password');
+    this.submitButton = page.getByRole('button', { name: 'Login' });
+  }
+
+  async goto() {
+    await this.page.goto('/login');
+  }
+
+  async login(username: string, password: string) {
+    await this.usernameInput.fill(username);
+    await this.passwordInput.fill(password);
+    await this.submitButton.click();
+  }
+}
+```
+
+---
+
+## Custom Fixtures Example
+```typescript
+import { test as base } from '@playwright/test';
+import { LoginPage } from '../pages/LoginPage';
+
+type TestFixtures = {
+  authenticatedPage: Page;
+};
+
+export const test = base.extend<TestFixtures>({
+  authenticatedPage: async ({ page }, use) => {
+    const loginPage = new LoginPage(page);
+    await loginPage.goto();
+    await loginPage.login('testuser', 'password');
+    await use(page);
+  },
+});
+
+export { expect } from '@playwright/test';
+```
+
+---
+
+## Test Structure Example
+```typescript
+import { test, expect } from '@playwright/test';
+import { LoginPage } from '../pages/LoginPage';
+
+test.describe('Login Tests', () => {
+  test.beforeEach(async ({ page }) => {
+    // Setup runs before each test
+    await page.goto('/login');
+  });
+
+  test('should login with valid credentials', async ({ page }) => {
+    const loginPage = new LoginPage(page);
+    await loginPage.login('testuser', 'password');
+    
+    await expect(page).toHaveURL('/dashboard');
+    await expect(page.getByText('Welcome')).toBeVisible();
+  });
+
+  test('should show error with invalid credentials', async ({ page }) => {
+    const loginPage = new LoginPage(page);
+    await loginPage.login('invalid', 'wrong');
+    
+    await expect(page.getByText('Invalid credentials')).toBeVisible();
+  });
+});
+```
+
+---
+
+## Actions and Assertions
+
+### Common Actions
+```typescript
+// Navigation
+await page.goto('/path');
+
+// Form interactions
+await page.getByLabel('Email').fill('user@example.com');
+await page.getByRole('checkbox').check();
+await page.getByRole('combobox').selectOption('option-value');
+
+// Clicks and hovers
+await page.getByRole('button').click();
+await page.getByText('Menu').hover();
+
+// Keyboard
+await page.getByLabel('Search').press('Enter');
+await page.keyboard.press('Escape');
+
+// File uploads
+await page.getByLabel('Upload').setInputFiles('path/to/file.pdf');
+```
+
+### Assertions
+```typescript
+// URL assertions
+await expect(page).toHaveURL('/dashboard');
+await expect(page).toHaveURL(/.*dashboard/);
+
+// Visibility assertions
+await expect(page.getByText('Welcome')).toBeVisible();
+await expect(page.getByRole('button')).toBeEnabled();
+
+// Text assertions
+await expect(page.getByText('Success')).toContainText('Success');
+await expect(page.getByRole('heading')).toHaveText('Dashboard');
+
+// Count assertions
+await expect(page.getByRole('listitem')).toHaveCount(5);
+
+// State assertions
+await expect(page.getByRole('checkbox')).toBeChecked();
+```
+
+### Rules
+- **SHOULD** use Playwright's auto-waiting - no manual `waitFor` needed
+- **SHOULD** use resilient assertions that handle eventual consistency
+- **SHOULD NOT** use `page.waitForTimeout()` - use assertions instead
+- **SHOULD NOT** mix manual waits with Playwright actions
+
+---
+
+## Accessibility Testing (@axe-core/playwright)
+```typescript
+import { injectAxe, checkA11y } from 'axe-playwright';
+
+test('should have no accessibility violations', async ({ page }) => {
+  await page.goto('/page');
+  await injectAxe(page);
+  await checkA11y(page);
+});
+```
+
+---
+
+## Network Mocking Example
+```typescript
+test('should handle API errors gracefully', async ({ page }) => {
+  // Mock API response
+  await page.route('**/api/users', route => {
+    route.fulfill({
+      status: 500,
+      body: JSON.stringify({ error: 'Server error' }),
+    });
+  });
+
+  await page.goto('/users');
+  await expect(page.getByText('Error loading users')).toBeVisible();
+});
+```
+
+---
+
+## Test Isolation and Setup
+
+### Rules
+- **SHOULD** use `test.beforeEach()` for common setup (navigation, login)
+- **SHOULD** use custom fixtures for authenticated state to avoid repetition
+- **SHOULD** ensure each test is independent - no test dependencies
+- **SHOULD NOT** rely on test execution order
+- **SHOULD NOT** share state between tests via global variables
+
+### Setup Project Pattern (for authenticated tests)
+```typescript
+// In playwright.config.ts
+projects: [
+  {
+    name: 'setup',
+    testMatch: /.*\.setup\.ts/,
+  },
+  {
+    name: 'chromium',
+    use: {
+      ...devices['Desktop Chrome'],
+      storageState: 'playwright/.auth/user.json',
+    },
+    dependencies: ['setup'],
+  },
+]
+```
+
+---
+
+## Reporting and Debugging
+
+### HTML Reporter
+- Automatically generated in `test-results/` directory
+- View with: `npx playwright show-report`
+- Includes screenshots, videos, and traces on failure
+
+### Trace Viewer
+- Enabled with `trace: 'on-first-retry'` in config
+- View with: `npx playwright show-trace trace.zip`
+- Provides step-by-step execution replay
+
+### Screenshots and Videos
+- Screenshots: `screenshot: 'only-on-failure'` (default)
+- Videos: `video: 'retain-on-failure'` (recommended for CI)
+- Manual screenshots: `await page.screenshot({ path: 'screenshot.png' })`
+
+---
+
+## CI/CD Configuration
+
+### GitHub Actions Example
+```yaml
+- name: Install Playwright Browsers
+  run: npx playwright install --with-deps
+
+- name: Run Playwright tests
+  run: npx playwright test
+
+- name: Upload test results
+  uses: actions/upload-artifact@v3
+  if: always()
+  with:
+    name: playwright-report
+    path: playwright-report/
+```
+
+### Rules
+- **SHOULD** install browsers with `--with-deps` flag in CI
+- **SHOULD** set `forbidOnly: true` in CI to prevent accidental `test.only()`
+- **SHOULD** configure retries (typically 2) for flaky test handling
+- **SHOULD** upload test reports as artifacts for debugging
+
+---

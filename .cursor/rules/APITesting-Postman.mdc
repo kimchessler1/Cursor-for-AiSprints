@@ -1,0 +1,187 @@
+# APITesting-Postman.mdc
+# Strong Guidance – Preferred Patterns
+
+Guidelines for API automation using Postman and Newman.
+
+---
+
+## Principles
+- APIs SHOULD be tested independently of UI
+- Schema validation SHOULD be enforced
+- Tests SHOULD run via CI
+ou truly want zero HTTP traffic for these pre-build checks, you’d need to change the collection so that:
+
+•  Requests don’t point to a real backend (e.g., use a dummy URL), or
+•  Move validation into separate requests that don’t depend on calling your real API, or
+•  Run these validations in a pure JS test runner instead of Newman.
+---
+
+## Assertion Example
+```javascript
+pm.test("Status 200", () => {
+  pm.response.to.have.status(200);
+});
+```
+
+### Boolean Value Handling
+
+**Issue**: Databases may return boolean values inconsistently (as `true`, `1`, `"true"`, or `0`).
+
+**Solution**: Use flexible comparisons in assertions:
+```javascript
+// Handle multiple boolean representations
+const isCorrect = jsonData.is_correct === true || 
+                  jsonData.is_correct === 1 || 
+                  jsonData.is_correct === "true";
+pm.expect(isCorrect).to.be.true;
+```
+
+**Best Practice**: 
+- Handle database boolean inconsistencies in test assertions
+- Use flexible comparisons for boolean fields from databases
+- Document expected data type conversions
+
+---
+
+## Schema Validation
+```javascript
+pm.test("Schema valid", () => {
+  pm.response.to.have.jsonSchema(schema);
+});
+```
+
+---
+
+## Environment Variable Usage
+```javascript
+pm.environment.set("userId", pm.response.json().id);
+```
+
+### Environment Variables vs Collection Variables
+- **Environment variables**: Use for data that needs to persist across multiple collections or test runs (e.g., `sessionToken`, `baseUrl`). Available across all collections using the same environment.
+- **Collection variables**: Use for test-scoped data within a single collection run (e.g., `testResourceId`, `testUserId`). Scoped to the collection execution.
+
+### Environment Variables vs Collection Variables
+- **Environment variables**: Use for data that needs to persist across multiple collections or test runs (e.g., `sessionToken`, `baseUrl`). Available across all collections using the same environment.
+- **Collection variables**: Use for test-scoped data within a single collection run (e.g., `testResourceId`, `testUserId`). Scoped to the collection execution.
+
+---
+
+## Newman CLI
+```bash
+newman run collection.json -e env.json --reporters junit,htmlextra
+```
+
+---
+
+## Jenkins Pipeline
+```groovy
+sh 'newman run collection.json --reporters junit'
+```
+
+---
+
+## JIRA Integration
+- JUnit XML published to Jenkins
+- Xray or Zephyr Scale consumes results
+- Retries SHOULD create new executions
+
+---
+
+## Cookie Management Best Practices
+
+### Automatic Cookie Jar (Postman GUI)
+- **Use Postman's cookie jar**: Let Postman automatically store and send cookies from `Set-Cookie` responses. Avoid manually setting `Cookie` headers when using Postman GUI.
+- **Setup login at collection start**: Add a setup request that logs in and captures the session cookie. The cookie jar will automatically send it to subsequent requests.
+
+### Newman CLI Cookie Persistence Limitations
+- **Newman CLI has known cookie persistence issues**: Newman's automatic cookie jar may not reliably send cookies between requests, especially with `httpOnly` cookies, specific domain/path configurations, or in CI/CD environments.
+- **Always verify cookie persistence**: Test cookie persistence between requests in Newman CLI, even if tests pass in Postman GUI.
+- **Have a fallback strategy**: Be prepared to use manual cookie injection if automatic cookie jar fails.
+
+### Manual Cookie Injection Pattern (Fallback for Newman CLI)
+When automatic cookie jar doesn't work reliably in Newman CLI, use manual cookie header injection:
+
+**After Login** (store cookie value):
+```javascript
+pm.test("Session cookie is set", function () {
+    const cookies = pm.cookies.all();
+    const sessionCookie = cookies.find(cookie => cookie.name === "your-cookie-name");
+    pm.expect(sessionCookie).to.not.be.undefined;
+    
+    // Store cookie value for manual injection in authenticated requests
+    if (sessionCookie) {
+        pm.environment.set("sessionToken", sessionCookie.value);
+    }
+});
+```
+
+**In Authenticated Requests** (inject cookie):
+```javascript
+// Prerequest script
+const sessionToken = pm.environment.get("sessionToken");
+if (sessionToken) {
+    pm.request.headers.add({
+        key: "Cookie",
+        value: `your-cookie-name=${sessionToken}`
+    });
+}
+```
+
+### Cookie Name Verification
+- **Always verify cookie names match**: Check server code for cookie name constants and ensure test cookie names match exactly. Cookie name mismatches cause authentication failures.
+- **Use consistent naming**: Use the same cookie name constant/variable in both server code and tests.
+
+### Cookie Jar Files Configuration
+- **Configure cookie jar files for Newman**: Use `--cookie-jar` and `--export-cookie-jar` flags in Newman CLI commands to persist cookies across runs:
+  ```bash
+  newman run collection.json -e env.json --cookie-jar .cookie-jar.json --export-cookie-jar .cookie-jar.json
+  ```
+- **Add cookie jar files to .gitignore**: Cookie jar files contain session data and should not be committed.
+
+### Cookie Detection Methods
+- **`pm.cookies.all()` limitations**: May not work reliably in Newman CLI. Prefer environment variable storage for manual injection.
+- **Cookie jar API**: Use `pm.cookies.jar().getAll()` with callbacks if cookie validation is needed, but prefer environment variables for manual injection.
+
+### Unauthenticated Tests
+- **Use `disableCookies: true` for unauthenticated tests**: Set `"protocolProfileBehavior": { "disableCookies": true }` on requests that should test unauthenticated access. This ensures cookies are not sent for proper 401 testing.
+- **Server-side logout for "no session" tests**: For tests expecting "no session" scenarios (e.g., 401 Unauthorized), call the logout endpoint server-side in a pre-request script before clearing cookies client-side. This ensures the session is invalidated on the server, not just the client.
+
+---
+
+## Setup Requests and Data Management
+- **DO NOT use `pm.sendRequest()` in pre-request scripts for setup**: `pm.sendRequest()` is asynchronous and does not block the main request. Variables set in callbacks will not be available when the main request executes.
+- **Create separate setup requests instead**: For test data that must exist before dependent tests run, create dedicated setup requests in folders (e.g., "MCQ - Attempt Setup") that execute synchronously before the tests that need them.
+- **Use collection variables for test-scoped data**: Use `pm.collectionVariables.set()` and `pm.collectionVariables.get()` for test data that's scoped to a collection run (e.g., `testMcqIdForAttempt`).
+- **Use environment variables for cross-collection data**: Use `pm.environment.set()` and `pm.environment.get()` for data that needs to persist across multiple collections (e.g., `authSessionCookie`).
+
+---
+
+## Authentication and Resource Existence Testing
+- **Authenticate before testing "not found" scenarios**: If an API route checks authentication before checking resource existence, tests expecting 404 Not Found must be authenticated first. Otherwise, they will receive 401 Unauthorized before reaching the resource existence check.
+
+---
+
+## API Response Structure Verification
+
+**CRITICAL**: Always verify actual API response structures before writing test assertions.
+
+### Verify Implementation First
+- **Check the actual implementation code** before writing test expectations
+- POST and GET endpoints may use different field names for the same data
+- Response structures may differ between endpoints (e.g., `attempt_id` vs `id`, `selected_choice` object vs `selected_choice_id` string)
+- Use working tests as reference for correct response structure
+
+### Common Patterns
+- **POST endpoints** may return enriched objects (e.g., `{ attempt_id, selected_choice: { id, text, ... }, correct_choice: {...} }`)
+- **GET endpoints** may return flattened structures (e.g., `{ attempts: [{ id, selected_choice_id, ... }] }`)
+- Field names may differ: `attempt_id` (POST) vs `id` (GET) - same value, different field name
+
+### Best Practices
+- Read the route handler code to understand actual response structure
+- Check service layer return types/interfaces
+- Use existing working tests as reference
+- Document response structure differences between endpoints
+- Update tests to match actual implementation, not vice versa
+
+---
